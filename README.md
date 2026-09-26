@@ -6,12 +6,10 @@ completely dark — while the Mac itself stays fully awake underneath, so
 background jobs, renders, downloads, or builds keep running overnight
 without a glowing display or keyboard lighting up the room.
 
-Lidless never dims the display or puts it to sleep. Instead it drops a
-pitch-black, always-on-top window over every connected display (covering
-full-screen apps, every Space, the Dock and menu bar), holds power
-assertions so the system never idles or sleeps, and turns the keyboard
-backlight off. A touch of keyboard or mouse activity past a configurable
-threshold ends Blackout Mode instantly.
+Lidless drives every connected display's hardware brightness to zero,
+holds power assertions so the system never idles or sleeps, and turns the
+keyboard backlight off. A touch of keyboard or mouse activity past a
+configurable threshold ends Blackout Mode instantly.
 
 ## Requirements
 
@@ -27,9 +25,9 @@ threshold ends Blackout Mode instantly.
 - **Menu bar only** — `LSUIElement`, no Dock icon, no app switcher entry.
 - **Global shortcut** (default `⌘F6`, re-recordable in Preferences) toggles
   Blackout Mode from anywhere.
-- **Overlay-based blackout** — borderless black `NSWindow`s at
-  `.screenSaver`+ level on every `NSScreen`, spanning all Spaces and
-  full-screen apps.
+- **Hardware-level blackout** — every active display's brightness driven to
+  0 via `DisplayServicesSetBrightness`, and restored to its previous level
+  on exit.
 - **Keyboard backlight off** during Blackout, restored to its previous
   level on exit.
 - **Power assertions** (`IOPMAssertionCreateWithName`) prevent idle system
@@ -51,21 +49,19 @@ Lidless/
 ├── Resources/
 │   ├── Info.plist
 │   ├── Lidless.entitlements           App Sandbox disabled — see note below
-│   └── Assets.xcassets/AppIcon.appiconset/   Pre-rendered app icon (all sizes)
+│   └── Assets.xcassets/AppIcon.appiconset/   App icon (all sizes)
 ├── Sources/Lidless/
 │   ├── App/                           @main SwiftUI App + AppDelegate
 │   ├── StatusBar/                     NSStatusItem + menu
-│   ├── Blackout/                      BlackoutController, OverlayWindow
+│   ├── Blackout/                      BlackoutController, DisplayBrightnessController
 │   ├── Power/                         PowerAssertionManager (IOKit)
 │   ├── Keyboard/                      Keyboard backlight control (see below)
 │   ├── Input/                         EventTapMonitor (CGEventTap wake watchdog)
 │   ├── Permissions/                   Accessibility check + onboarding UI
 │   ├── Hotkey/                        Carbon-based global shortcut + recorder UI
 │   ├── Preferences/                   Settings store, SwiftUI view, window
-│   ├── LaunchAtLogin/                 SMAppService wrapper
-│   └── Support/                       Objective-C bridging header
+│   └── LaunchAtLogin/                 SMAppService wrapper
 └── scripts/
-    ├── generate_app_icon.py           Regenerates the app icon (Pillow)
     ├── build.sh                       xcodegen generate + xcodebuild (Release, arm64)
     └── build_dmg.sh                   Builds the app, then packages a drag-to-install .dmg
 ```
@@ -99,41 +95,34 @@ the right distribution path for this app.
 
 ## Why the app isn't sandboxed
 
-Three of Lidless's core capabilities are unavailable under the macOS App
+Core capabilities Lidless depends on are unavailable under the macOS App
 Sandbox:
 
 - A listen-only `CGEventTap` for detecting wake-up activity
 - `IOPMAssertionCreateWithName` power assertions
-- Keyboard backlight control (see below)
+- The private `DisplayServices` and `CoreBrightness` frameworks used for
+  display and keyboard brightness control
 
 `Resources/Lidless.entitlements` disables the App Sandbox accordingly. This
 is standard for this class of system utility (Amphetamine, Lunar,
 MonitorControl, etc.) and means distribution is via Developer ID + notarization,
 not the Mac App Store.
 
-## Keyboard backlight control
+## Display and keyboard backlight control
 
-There is no public macOS API for reading or setting the built-in keyboard
-backlight. `Sources/Lidless/Keyboard/KeyboardBacklightBridge.m` looks up the
-private `CoreBrightness` framework's `KeyboardBrightnessClient` class by
-name at runtime and calls its `brightnessForKeyboard:` /
-`setBrightness:forKeyboard:` selectors through typed C function pointers.
-This is the same technique long used by several open-source keyboard
-brightness utilities. It fails soft: if a future macOS release changes or
-removes this private class, Lidless simply skips backlight control rather
-than crashing.
+There is no public macOS API for either of these, so both go through
+private frameworks, resolved by name at runtime (so a future OS change that
+reshapes either one degrades to a no-op rather than crashing):
 
-## Regenerating the app icon
-
-```sh
-pip install pillow
-python3 scripts/generate_app_icon.py
-```
-
-Draws a minimalist, half-open MacBook silhouette on a dark graphite
-squircle background and writes every required size directly into
-`Resources/Assets.xcassets/AppIcon.appiconset/`. Edit the geometry/color
-constants near the top of `build_icon()` to tweak the design.
+- **Display brightness** (`Sources/Lidless/Blackout/DisplayBrightnessController.swift`)
+  uses the private `DisplayServices` framework's
+  `DisplayServicesGetBrightness` / `DisplayServicesSetBrightness` on each
+  active `CGDirectDisplayID`.
+- **Keyboard backlight** (`Sources/Lidless/Keyboard/KeyboardBacklightController.swift`)
+  uses CoreBrightness's private `KeyboardBrightnessClient` class — its
+  `copyKeyboardBacklightIDs`, `brightnessForKeyboard:`, and
+  `setBrightness:fadeSpeed:commit:forKeyboard:` selectors, invoked via
+  `objc_msgSend` since no header ships for this class.
 
 ## Preferences
 
