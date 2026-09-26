@@ -52,7 +52,7 @@ final class BlackoutController: ObservableObject {
         // not survive real trackpad/mouse movement. CGDisplayHideCursor
         // operates at the display/session level and stays hidden through
         // movement, which is what "invisible during Blackout" needs.
-        CGDisplayHideCursor(kCGDirectMainDisplay)
+        CGDisplayHideCursor(CGMainDisplayID())
 
         powerAssertionManager.acquire(reason: "Lidless Blackout Mode is active")
         // Turning the backlight off simulates the brightness media key,
@@ -84,7 +84,7 @@ final class BlackoutController: ObservableObject {
         powerAssertionManager.release()
 
         removeOverlayWindows()
-        CGDisplayShowCursor(kCGDirectMainDisplay)
+        CGDisplayShowCursor(CGMainDisplayID())
     }
 
     /// Synchronous teardown for app termination — no animations, no delays.
