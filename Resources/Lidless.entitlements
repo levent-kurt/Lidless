@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	Lidless is intentionally NOT sandboxed. The App Sandbox blocks the exact
+	capabilities this app depends on: a CGEventTap for global input
+	monitoring, IOPMAssertionCreateWithName power assertions, and the
+	private CoreBrightness framework used to control the keyboard backlight.
+	This means Lidless must be distributed outside the Mac App Store
+	(Developer ID signed + notarized), which is standard for this class of
+	system utility (e.g. Amphetamine, Lunar, MonitorControl).
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.automation.apple-events</key>
+	<false/>
+</dict>
+</plist>
