@@ -1,23 +1,50 @@
 #import "KeyboardBacklightBridge.h"
 #import <Foundation/Foundation.h>
+#import <CoreFoundation/CoreFoundation.h>
+#import <IOKit/IOKitLib.h>
 #import <dlfcn.h>
+#import <dispatch/dispatch.h>
+#import <mach/mach_time.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <os/log.h>
 
-// macOS has no public API for the built-in keyboard backlight. The only
-// working mechanism (used by several long-standing open-source utilities)
-// is the private CoreBrightness framework's KeyboardBrightnessClient class:
+// macOS has no public API for the built-in keyboard backlight. Two private
+// mechanisms are tried:
 //
-//   @interface KeyboardBrightnessClient : NSObject
-//   - (float)brightnessForKeyboard:(int)keyboardType;
-//   - (BOOL)setBrightness:(float)brightness forKeyboard:(int)keyboardType;
-//   @end
+//   1. CoreBrightness's KeyboardBrightnessClient class — the mechanism
+//      System Settings itself used to use, at least on Intel Macs:
+//        @interface KeyboardBrightnessClient : NSObject
+//        - (float)brightnessForKeyboard:(int)keyboardType;
+//        - (BOOL)setBrightness:(float)brightness forKeyboard:(int)keyboardType;
+//        @end
+//      No header ships for it, so the class/selectors are looked up by name
+//      at runtime and invoked through correctly-typed C function pointers
+//      (plain -performSelector: can't carry a float argument or return type).
 //
-// Since no header ships for it, we look the class up by name at runtime and
-// invoke the selectors through correctly-typed C function pointers (plain
-// -performSelector: can't carry a float argument or return type). Everything
-// here fails soft: if Apple reshapes or removes this in a future release,
-// these functions simply return false / a negative value instead of crashing.
+//   2. A raw IOHIDEventSystemClient vendor-defined HID event on Apple's
+//      private vendor usage page (0xff00), which is what actually reaches
+//      the keyboard backlight controller on Apple Silicon. This API has no
+//      public header either, so its C functions are forward-declared below
+//      and resolved against IOKit.framework, which Lidless already links.
+//
+// Both paths log every step via os_log so a failure is diagnosable from
+// Console.app (subsystem "com.leventkurt.Lidless", category
+// "KeyboardBacklight") instead of silently doing nothing. Neither path is
+// guaranteed by Apple, so this is inherently best-effort: if a future macOS
+// release reshapes either mechanism, these functions degrade to a no-op
+// rather than crashing.
+
+static os_log_t LidlessKeyboardLog(void) {
+    static os_log_t log;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        log = os_log_create("com.leventkurt.Lidless", "KeyboardBacklight");
+    });
+    return log;
+}
+
+#pragma mark - Mechanism 1: CoreBrightness KeyboardBrightnessClient
 
 typedef BOOL (*LidlessSetBrightnessFn)(id, SEL, float, int);
 typedef float (*LidlessGetBrightnessFn)(id, SEL, int);
@@ -33,18 +60,21 @@ static id LidlessKeyboardBrightnessClient(void) {
             RTLD_NOW
         );
         if (!handle) {
+            os_log_error(LidlessKeyboardLog(), "CoreBrightness: dlopen failed");
             return;
         }
         Class cls = NSClassFromString(@"KeyboardBrightnessClient");
         if (!cls) {
+            os_log_error(LidlessKeyboardLog(), "CoreBrightness: KeyboardBrightnessClient class not found");
             return;
         }
         client = [[cls alloc] init];
+        os_log(LidlessKeyboardLog(), "CoreBrightness: client %{public}@", client ? @"created" : @"failed to init");
     });
     return client;
 }
 
-bool LidlessSetKeyboardBrightness(float level) {
+static bool LidlessSetKeyboardBrightnessViaCoreBrightness(float level) {
     id client = LidlessKeyboardBrightnessClient();
     if (!client) {
         return false;
@@ -52,12 +82,14 @@ bool LidlessSetKeyboardBrightness(float level) {
 
     SEL selector = NSSelectorFromString(@"setBrightness:forKeyboard:");
     if (![client respondsToSelector:selector]) {
+        os_log_error(LidlessKeyboardLog(), "CoreBrightness: client does not respond to setBrightness:forKeyboard:");
         return false;
     }
 
-    float clamped = MAX(0.0f, MIN(1.0f, level));
     LidlessSetBrightnessFn function = (LidlessSetBrightnessFn)[client methodForSelector:selector];
-    return (bool)function(client, selector, clamped, kLidlessKeyboardType);
+    BOOL result = function(client, selector, level, kLidlessKeyboardType);
+    os_log(LidlessKeyboardLog(), "CoreBrightness: setBrightness:%.2f forKeyboard: -> %{public}@", level, result ? @"YES" : @"NO");
+    return (bool)result;
 }
 
 float LidlessGetKeyboardBrightness(void) {
@@ -68,9 +100,104 @@ float LidlessGetKeyboardBrightness(void) {
 
     SEL selector = NSSelectorFromString(@"brightnessForKeyboard:");
     if (![client respondsToSelector:selector]) {
+        os_log_error(LidlessKeyboardLog(), "CoreBrightness: client does not respond to brightnessForKeyboard:");
         return -1.0f;
     }
 
     LidlessGetBrightnessFn function = (LidlessGetBrightnessFn)[client methodForSelector:selector];
-    return function(client, selector, kLidlessKeyboardType);
+    float result = function(client, selector, kLidlessKeyboardType);
+    os_log(LidlessKeyboardLog(), "CoreBrightness: brightnessForKeyboard: -> %.2f", result);
+    return result;
+}
+
+#pragma mark - Mechanism 2: IOHIDEventSystemClient vendor-defined event
+
+// No public header declares these; they are real, exported IOKit.framework
+// symbols used internally by Apple's own HID stack (and by the well-known
+// technique for reading the ambient light sensor on Apple Silicon).
+typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
+typedef struct __IOHIDServiceClient *IOHIDServiceClientRef;
+typedef struct __IOHIDEvent *IOHIDEventRef;
+
+extern IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
+extern int IOHIDEventSystemClientSetMatching(IOHIDEventSystemClientRef client, CFDictionaryRef match);
+extern CFArrayRef IOHIDEventSystemClientCopyServices(IOHIDEventSystemClientRef client);
+extern IOHIDEventRef IOHIDEventCreateVendorDefinedEvent(
+    CFAllocatorRef allocator,
+    uint64_t timeStamp,
+    uint32_t usagePage,
+    uint32_t usage,
+    uint32_t version,
+    uint8_t *data,
+    CFIndex length,
+    IOOptionBits options
+);
+extern void IOHIDServiceClientDispatchEvent(IOHIDServiceClientRef service, IOHIDEventRef event);
+
+// Apple's private "AppleVendor" HID usage page, and the usage on it that
+// the keyboard backlight controller listens for.
+static const uint32_t kLidlessHIDPageAppleVendor = 0xff00;
+static const uint32_t kLidlessHIDUsageKeyboardBacklight = 0x0f;
+
+static bool LidlessSetKeyboardBrightnessViaHIDEvent(float level) {
+    IOHIDEventSystemClientRef client = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+    if (!client) {
+        os_log_error(LidlessKeyboardLog(), "HIDEvent: IOHIDEventSystemClientCreate failed");
+        return false;
+    }
+
+    NSDictionary *matching = @{
+        @"PrimaryUsagePage": @(kLidlessHIDPageAppleVendor),
+        @"PrimaryUsage": @(kLidlessHIDUsageKeyboardBacklight),
+    };
+    IOHIDEventSystemClientSetMatching(client, (__bridge CFDictionaryRef)matching);
+
+    CFArrayRef servicesRef = IOHIDEventSystemClientCopyServices(client);
+    NSArray *services = (__bridge_transfer NSArray *)servicesRef;
+    os_log(LidlessKeyboardLog(), "HIDEvent: matched %lu service(s) on page 0x%x usage 0x%x",
+           (unsigned long)services.count, kLidlessHIDPageAppleVendor, kLidlessHIDUsageKeyboardBacklight);
+
+    if (services.count == 0) {
+        CFRelease(client);
+        return false;
+    }
+
+    uint8_t clamped = (uint8_t)MAX(0, MIN(255, (int)(level * 255.0f)));
+    uint8_t payload[1] = { clamped };
+
+    for (id serviceObject in services) {
+        IOHIDServiceClientRef service = (__bridge IOHIDServiceClientRef)serviceObject;
+        IOHIDEventRef event = IOHIDEventCreateVendorDefinedEvent(
+            kCFAllocatorDefault,
+            mach_absolute_time(),
+            kLidlessHIDPageAppleVendor,
+            kLidlessHIDUsageKeyboardBacklight,
+            0,
+            payload,
+            sizeof(payload),
+            0
+        );
+        if (!event) {
+            os_log_error(LidlessKeyboardLog(), "HIDEvent: IOHIDEventCreateVendorDefinedEvent failed");
+            continue;
+        }
+        IOHIDServiceClientDispatchEvent(service, event);
+        CFRelease(event);
+    }
+
+    CFRelease(client);
+    os_log(LidlessKeyboardLog(), "HIDEvent: dispatched brightness %.2f (byte %u) to %lu service(s)",
+           level, clamped, (unsigned long)services.count);
+    return true;
+}
+
+#pragma mark - Public entry point
+
+bool LidlessSetKeyboardBrightness(float level) {
+    float clamped = MAX(0.0f, MIN(1.0f, level));
+
+    bool coreBrightnessOK = LidlessSetKeyboardBrightnessViaCoreBrightness(clamped);
+    bool hidEventOK = LidlessSetKeyboardBrightnessViaHIDEvent(clamped);
+
+    return coreBrightnessOK || hidEventOK;
 }

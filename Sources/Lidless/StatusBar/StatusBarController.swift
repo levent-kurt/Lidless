@@ -38,11 +38,10 @@ final class StatusBarController {
 
     private func configureButton() {
         if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "eye.circle",
-                accessibilityDescription: "Lidless"
-            )
-            button.image?.isTemplate = true
+            let image = NSImage(named: "MenuBarIcon")
+            image?.isTemplate = true
+            button.image = image
+            button.image?.accessibilityDescription = "Lidless"
         }
     }
 
@@ -84,11 +83,6 @@ final class StatusBarController {
     private func updateForBlackoutState(_ isActive: Bool) {
         toggleMenuItem.title = isActive ? "Stop Blackout" : "Start Blackout"
         toggleMenuItem.state = isActive ? .on : .off
-        statusItem.button?.image = NSImage(
-            systemSymbolName: isActive ? "eye.slash.circle.fill" : "eye.circle",
-            accessibilityDescription: "Lidless"
-        )
-        statusItem.button?.image?.isTemplate = true
     }
 
     func updatePermissionState(trusted: Bool) {
