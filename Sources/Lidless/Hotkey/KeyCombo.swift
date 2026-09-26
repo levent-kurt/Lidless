@@ -54,7 +54,7 @@ struct KeyCombo: Codable, Equatable {
 
             let status = layoutData.withUnsafeBytes { rawBuffer -> OSStatus in
                 guard let keyboardLayoutPointer = rawBuffer.bindMemory(to: UCKeyboardLayout.self).baseAddress else {
-                    return paramErr
+                    return OSStatus(paramErr)
                 }
                 return UCKeyTranslate(
                     keyboardLayoutPointer,
