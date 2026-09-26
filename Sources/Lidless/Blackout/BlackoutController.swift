@@ -55,6 +55,9 @@ final class BlackoutController: ObservableObject {
         CGDisplayHideCursor(kCGDirectMainDisplay)
 
         powerAssertionManager.acquire(reason: "Lidless Blackout Mode is active")
+        // Turning the backlight off simulates the brightness media key,
+        // which shows the system's on-screen HUD — done after the overlay
+        // is already up so that HUD ends up hidden underneath it.
         keyboardBacklightController.turnOffAndRemember()
 
         let monitor = EventTapMonitor(thresholds: preferences.eventTapThresholds) { [weak self] in
@@ -72,11 +75,16 @@ final class BlackoutController: ObservableObject {
         eventTapMonitor = nil
 
         stopObservingScreenChanges()
-        removeOverlayWindows()
-        CGDisplayShowCursor(kCGDirectMainDisplay)
 
+        // Restore the backlight (and release the cursor/overlay) while the
+        // overlay is still up — restoring simulates the brightness media
+        // key too, which shows the system's on-screen HUD, and the overlay
+        // sitting above it is what keeps that HUD from being visible.
         keyboardBacklightController.restore()
         powerAssertionManager.release()
+
+        removeOverlayWindows()
+        CGDisplayShowCursor(kCGDirectMainDisplay)
     }
 
     /// Synchronous teardown for app termination — no animations, no delays.
