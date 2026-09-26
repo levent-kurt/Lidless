@@ -12,7 +12,6 @@ settings:
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: YES
     SWIFT_VERSION: "5.0"
-    SWIFT_OBJC_BRIDGING_HEADER: Sources/Lidless/Support/Lidless-Bridging-Header.h
     ENABLE_HARDENED_RUNTIME: YES
     CODE_SIGN_STYLE: Automatic
     PRODUCT_BUNDLE_IDENTIFIER: com.leventkurt.Lidless
