@@ -46,6 +46,7 @@ final class BlackoutController: ObservableObject {
 
         createOverlayWindows()
         observeScreenChanges()
+        NSCursor.hide()
 
         powerAssertionManager.acquire(reason: "Lidless Blackout Mode is active")
         keyboardBacklightController.turnOffAndRemember()
@@ -66,6 +67,7 @@ final class BlackoutController: ObservableObject {
 
         stopObservingScreenChanges()
         removeOverlayWindows()
+        NSCursor.unhide()
 
         keyboardBacklightController.restore()
         powerAssertionManager.release()
