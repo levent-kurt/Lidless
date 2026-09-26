@@ -4,7 +4,6 @@
 #import <IOKit/IOKitLib.h>
 #import <dlfcn.h>
 #import <dispatch/dispatch.h>
-#import <mach/mach_time.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <os/log.h>
@@ -22,11 +21,11 @@
 //      at runtime and invoked through correctly-typed C function pointers
 //      (plain -performSelector: can't carry a float argument or return type).
 //
-//   2. A raw IOHIDEventSystemClient vendor-defined HID event on Apple's
-//      private vendor usage page (0xff00), which is what actually reaches
-//      the keyboard backlight controller on Apple Silicon. This API has no
-//      public header either, so its C functions are forward-declared below
-//      and resolved against IOKit.framework, which Lidless already links.
+//   2. IOHIDServiceClientSetElementValue on Apple's private vendor usage
+//      page (0xff00), which is what actually reaches the keyboard backlight
+//      controller on Apple Silicon. This API has no public header either,
+//      so its C functions are forward-declared below and resolved against
+//      IOKit.framework, which Lidless already links.
 //
 // Both paths log every step via os_log so a failure is diagnosable from
 // Console.app (subsystem "com.leventkurt.Lidless", category
@@ -110,45 +109,37 @@ float LidlessGetKeyboardBrightness(void) {
     return result;
 }
 
-#pragma mark - Mechanism 2: IOHIDEventSystemClient vendor-defined event
+#pragma mark - Mechanism 2: IOHIDServiceClientSetElementValue
 
 // No public header declares these; they are real, exported IOKit.framework
-// symbols used internally by Apple's own HID stack (and by the well-known
-// technique for reading the ambient light sensor on Apple Silicon).
+// symbols (confirmed via `dyld_info -exports` against the running system —
+// see the PR discussion) used internally by Apple's own HID stack. This is
+// the same private primitive documented techniques use to set the Caps
+// Lock LED (kIOHIDServiceCapsLockLEDKey lives on the very same usage page
+// in this framework's export list), applied here to the keyboard
+// backlight's own vendor-defined HID element instead.
 typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
 typedef struct __IOHIDServiceClient *IOHIDServiceClientRef;
-typedef struct __IOHIDEvent *IOHIDEventRef;
 
 extern IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
 extern int IOHIDEventSystemClientSetMatching(IOHIDEventSystemClientRef client, CFDictionaryRef match);
 extern CFArrayRef IOHIDEventSystemClientCopyServices(IOHIDEventSystemClientRef client);
-extern IOHIDEventRef IOHIDEventCreateVendorDefinedEvent(
-    CFAllocatorRef allocator,
-    uint64_t timeStamp,
+extern void IOHIDServiceClientSetElementValue(
+    IOHIDServiceClientRef service,
     uint32_t usagePage,
     uint32_t usage,
-    uint32_t version,
-    uint8_t *data,
-    CFIndex length,
-    IOOptionBits options
+    CFIndex value
 );
-// NOTE: there is no confirmed real symbol for "send this event to a
-// service" yet — a prior guess (IOHIDServiceClientDispatchEvent) does not
-// exist on this SDK and failed the link. Everything up to building the
-// event (Create/SetMatching/CopyServices/CreateVendorDefinedEvent above)
-// does link, so this API family is real; only the final dispatch call is
-// still unknown. Left out until confirmed — see
-// LidlessSetKeyboardBrightnessViaHIDEvent below.
 
 // Apple's private "AppleVendor" HID usage page, and the usage on it that
 // the keyboard backlight controller listens for.
 static const uint32_t kLidlessHIDPageAppleVendor = 0xff00;
 static const uint32_t kLidlessHIDUsageKeyboardBacklight = 0x0f;
 
-static bool LidlessSetKeyboardBrightnessViaHIDEvent(float level) {
+static bool LidlessSetKeyboardBrightnessViaHIDElement(float level) {
     IOHIDEventSystemClientRef client = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
     if (!client) {
-        os_log_error(LidlessKeyboardLog(), "HIDEvent: IOHIDEventSystemClientCreate failed");
+        os_log_error(LidlessKeyboardLog(), "HIDElement: IOHIDEventSystemClientCreate failed");
         return false;
     }
 
@@ -160,16 +151,23 @@ static bool LidlessSetKeyboardBrightnessViaHIDEvent(float level) {
 
     CFArrayRef servicesRef = IOHIDEventSystemClientCopyServices(client);
     NSArray *services = (__bridge_transfer NSArray *)servicesRef;
-    os_log(LidlessKeyboardLog(), "HIDEvent: matched %lu service(s) on page 0x%x usage 0x%x",
+    os_log(LidlessKeyboardLog(), "HIDElement: matched %lu service(s) on page 0x%x usage 0x%x",
            (unsigned long)services.count, kLidlessHIDPageAppleVendor, kLidlessHIDUsageKeyboardBacklight);
 
-    CFRelease(client);
+    if (services.count == 0) {
+        CFRelease(client);
+        return false;
+    }
 
-    // TODO: the real "dispatch this event to a service" symbol isn't
-    // confirmed yet (see the NOTE above the extern declarations), so this
-    // mechanism currently stops at diagnosing whether the service exists
-    // at all rather than guessing another linker-breaking symbol name.
-    return false;
+    CFIndex value = (CFIndex)(level * 100.0f);
+    for (id serviceObject in services) {
+        IOHIDServiceClientRef service = (__bridge IOHIDServiceClientRef)serviceObject;
+        IOHIDServiceClientSetElementValue(service, kLidlessHIDPageAppleVendor, kLidlessHIDUsageKeyboardBacklight, value);
+    }
+
+    CFRelease(client);
+    os_log(LidlessKeyboardLog(), "HIDElement: set value %ld on %lu service(s)", (long)value, (unsigned long)services.count);
+    return true;
 }
 
 #pragma mark - Public entry point
@@ -178,7 +176,7 @@ bool LidlessSetKeyboardBrightness(float level) {
     float clamped = MAX(0.0f, MIN(1.0f, level));
 
     bool coreBrightnessOK = LidlessSetKeyboardBrightnessViaCoreBrightness(clamped);
-    bool hidEventOK = LidlessSetKeyboardBrightnessViaHIDEvent(clamped);
+    bool hidElementOK = LidlessSetKeyboardBrightnessViaHIDElement(clamped);
 
-    return coreBrightnessOK || hidEventOK;
+    return coreBrightnessOK || hidElementOK;
 }
