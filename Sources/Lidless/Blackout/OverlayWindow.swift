@@ -6,12 +6,15 @@ import AppKit
 final class OverlayWindow: NSWindow {
 
     init(screen: NSScreen) {
+        // contentRect is already in the same global coordinate space as
+        // screen.frame, so the designated initializer places this window
+        // on the right display without needing a `screen:` argument (which
+        // is a convenience initializer, not overridable from a subclass).
         super.init(
             contentRect: screen.frame,
             styleMask: [.borderless],
             backing: .buffered,
-            defer: false,
-            screen: screen
+            defer: false
         )
 
         isOpaque = true
