@@ -132,7 +132,13 @@ extern IOHIDEventRef IOHIDEventCreateVendorDefinedEvent(
     CFIndex length,
     IOOptionBits options
 );
-extern void IOHIDServiceClientDispatchEvent(IOHIDServiceClientRef service, IOHIDEventRef event);
+// NOTE: there is no confirmed real symbol for "send this event to a
+// service" yet — a prior guess (IOHIDServiceClientDispatchEvent) does not
+// exist on this SDK and failed the link. Everything up to building the
+// event (Create/SetMatching/CopyServices/CreateVendorDefinedEvent above)
+// does link, so this API family is real; only the final dispatch call is
+// still unknown. Left out until confirmed — see
+// LidlessSetKeyboardBrightnessViaHIDEvent below.
 
 // Apple's private "AppleVendor" HID usage page, and the usage on it that
 // the keyboard backlight controller listens for.
@@ -157,38 +163,13 @@ static bool LidlessSetKeyboardBrightnessViaHIDEvent(float level) {
     os_log(LidlessKeyboardLog(), "HIDEvent: matched %lu service(s) on page 0x%x usage 0x%x",
            (unsigned long)services.count, kLidlessHIDPageAppleVendor, kLidlessHIDUsageKeyboardBacklight);
 
-    if (services.count == 0) {
-        CFRelease(client);
-        return false;
-    }
-
-    uint8_t clamped = (uint8_t)MAX(0, MIN(255, (int)(level * 255.0f)));
-    uint8_t payload[1] = { clamped };
-
-    for (id serviceObject in services) {
-        IOHIDServiceClientRef service = (__bridge IOHIDServiceClientRef)serviceObject;
-        IOHIDEventRef event = IOHIDEventCreateVendorDefinedEvent(
-            kCFAllocatorDefault,
-            mach_absolute_time(),
-            kLidlessHIDPageAppleVendor,
-            kLidlessHIDUsageKeyboardBacklight,
-            0,
-            payload,
-            sizeof(payload),
-            0
-        );
-        if (!event) {
-            os_log_error(LidlessKeyboardLog(), "HIDEvent: IOHIDEventCreateVendorDefinedEvent failed");
-            continue;
-        }
-        IOHIDServiceClientDispatchEvent(service, event);
-        CFRelease(event);
-    }
-
     CFRelease(client);
-    os_log(LidlessKeyboardLog(), "HIDEvent: dispatched brightness %.2f (byte %u) to %lu service(s)",
-           level, clamped, (unsigned long)services.count);
-    return true;
+
+    // TODO: the real "dispatch this event to a service" symbol isn't
+    // confirmed yet (see the NOTE above the extern declarations), so this
+    // mechanism currently stops at diagnosing whether the service exists
+    // at all rather than guessing another linker-breaking symbol name.
+    return false;
 }
 
 #pragma mark - Public entry point
