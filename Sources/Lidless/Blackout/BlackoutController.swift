@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreGraphics
 
 /// Orchestrates a single Blackout Mode session: overlay windows on every
 /// display, a power assertion so background tasks keep running, the
@@ -46,7 +47,12 @@ final class BlackoutController: ObservableObject {
 
         createOverlayWindows()
         observeScreenChanges()
-        NSCursor.hide()
+        // NSCursor.hide() is tied to app/window focus and gets reset by the
+        // window server on the next mouse-moved event regardless — it does
+        // not survive real trackpad/mouse movement. CGDisplayHideCursor
+        // operates at the display/session level and stays hidden through
+        // movement, which is what "invisible during Blackout" needs.
+        CGDisplayHideCursor(kCGDirectMainDisplay)
 
         powerAssertionManager.acquire(reason: "Lidless Blackout Mode is active")
         keyboardBacklightController.turnOffAndRemember()
@@ -67,7 +73,7 @@ final class BlackoutController: ObservableObject {
 
         stopObservingScreenChanges()
         removeOverlayWindows()
-        NSCursor.unhide()
+        CGDisplayShowCursor(kCGDirectMainDisplay)
 
         keyboardBacklightController.restore()
         powerAssertionManager.release()
